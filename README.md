@@ -1,248 +1,169 @@
-# Resume RAG System with LangChain and watsonx.ai
+# Resume RAG System — LangChain + IBM watsonx.ai
 
-This project implements a Retrieval Augmented Generation (RAG) system to extract information from PDF resumes and answer questions about them using LangChain and IBM watsonx.ai.
+> **One-line:** Extract text from a resume PDF, store full-page documents in a vector store (no chunking), then answer user questions by retrieving relevant pages and calling a watsonx LLM.
 
-## Overview
+## Problem statement
 
-The system:
-1. **Extracts text** from a PDF resume
-2. **Creates a vector store** from the extracted text
-3. **Retrieves relevant information** based on questions
-4. **Generates answers** using an LLM with the retrieved context
+Many teams want a quick Q&A system over resumes (or other PDFs) that:
+
+1. Extracts text from an uploaded PDF,
+2. Stores the extracted text in a vector store for retrieval, and
+3. Uses an LLM to answer user questions **only** from retrieved context.
+
+Constraints for this repository:
+
+* **No chunking** — each PDF page is stored as a single `Document`.
+* **Only LangChain primitives** are used.
+* **Only IBM watson / watsonx models** are used for embeddings and LLM inference (no OpenAI, etc.).
+
+## Short solution summary
+
+This project uses `PyPDFLoader` to extract **page-level** text from a resume PDF, injects each page as a single `Document` into a Chroma vector store using `WatsonxEmbeddings`, and answers questions by retrieving the top-`k` pages and passing the concatenated context to a `WatsonxLLM` via a LangChain prompt. No chunking is performed — each page remains intact.
+
+## Architecture (high-level)
+
+![AricheturalDiagram](https://github.com/user-attachments/assets/05d12528-068c-4665-a17a-1115759a9036)
+
+## Files provided (key ones)
+
+* `main.py` — runnable script with the full pipeline (credential setup, PDF load, embeddings, vector store creation, test search, LLM chain loop).
+* `README.md` — (this file) usage & explanation.
+* `requirements.txt` — Python dependencies (recommended).
+
+## Key design decisions (called out)
+
+* **`PyPDFLoader`**: Produces one LangChain `Document` per page, preserves metadata, and integrates nicely with LangChain.
+* **No chunking**: Each page is indexed as a single unit to satisfy the `NO CHUNKING` requirement. (Trade-off: very long pages can risk LLM context limits.)
+* **Chroma vector store**: Local, simple, and integrates with LangChain — ideal for experiments and single-repo setups.
+* **IBM watsonx.ai**: `WatsonxEmbeddings` and `WatsonxLLM` (e.g., `ibm/slate-125m-english-rtrvr-v2` for embeddings and `ibm/granite-3-8b-instruct` for LLM) are used to comply with the constraint to use only watson/watsonx models. These provide enterprise-grade governance and on-cloud/on-prem options.
+* **GPT-2 tokenizer**: Used only to estimate token counts (fast, lightweight, model-agnostic).
 
 ## Prerequisites
 
-1. **IBM Cloud Account**: You need an IBM Cloud account to use watsonx.ai
-2. **watsonx.ai Project**: Create a project in watsonx.ai
-3. **watsonx.ai Runtime Service**: Create a Runtime service instance (Lite plan is free)
-4. **API Key**: Generate an API key from the Runtime service
-5. **Project ID**: Your watsonx.ai project ID
+* Python 3.10+ recommended
+* An IBM watsonx.ai instance (API key + optionally `project_id`)
+* Local filesystem or environment with sample PDF(s) to test
 
-## Installation
-
-### Step 1: Install Python Dependencies
+Install dependencies (example):
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Step 2: Download NLTK Data
+`requirements.txt` should include (example):
 
-The script will automatically download required NLTK data, but you can also do it manually:
-
-```python
-import nltk
-nltk.download('averaged_perceptron_tagger_eng')
+```
+langchain
+langchain_community
+langchain_ibm
+ibm_watson_machine_learning
+ibm_watsonx_ai
+chromadb
+transformers
+pypdf
 ```
 
-## Setup Instructions
+> Adjust package names/versions for your environment and IBM SDK compatibility.
 
-### Step 1: Get Your Credentials
+## Setup
 
-1. Log in to [watsonx.ai](https://dataplatform.cloud.ibm.com/)
-2. Create a watsonx.ai project (if you haven't already)
-3. Create a watsonx.ai Runtime service instance:
-   - Go to the IBM Cloud catalog
-   - Search for "watsonx.ai Runtime"
-   - Select the Lite (free) plan
-   - Create the service
-4. Generate an API Key:
-   - Go to your Runtime service instance
-   - Navigate to "Service credentials"
-   - Create a new credential
-   - Copy the API key
-5. Get your Project ID:
-   - In your watsonx.ai project
-   - The Project ID is shown in the project details
+1. Create an API key for IBM watsonx.ai and save it to a JSON file, or set it as an environment variable `WML_APIKEY` (the code reads both). Example `apikey.json` format:
 
-### Step 2: Set Environment Variables (Optional)
+```json
+{ "apikey": "<YOUR_API_KEY>", "project_id": "<OPTIONAL_PROJECT_ID>" }
+```
 
-You can set the PROJECT_ID as an environment variable:
+2. Optionally export `PROJECT_ID` if you want to override the default project id.
+
+3. Edit `DEFAULT_CREDENTIALS_PATH` or store your key at the path used in the script.
+
+## How it works (step-by-step)
+
+1. **Load credentials** — `setup_credentials()` reads API key and project id.
+2. **Load PDF** — `load_resume_pdf(pdf_path)` uses `PyPDFLoader` to create a list of `Document` objects (one per page). Each document is sanitized and annotated with metadata (`id`, `source`, `page`).
+3. **(Optional) Tokenization check** — `split_text_into_chunks()` exists in the code for token-based chunking, but to honor the `NO CHUNKING` requirement you should **bypass** it and index `documents` directly.
+4. **Create embeddings** — `setup_embeddings()` creates a `WatsonxEmbeddings` instance.
+5. **Create vector store** — `Chroma.from_documents(documents=documents, embedding=embeddings, collection_name=...)`.
+6. **Test retrieval** — `test_vector_store()` runs a similarity search (k=3) and prints results with scores and metadata.
+7. **Set up LLM** — `setup_llm()` configures `WatsonxLLM` with `GenParams` tuned for low temperature and instruction-following.
+8. **Create RAG chain** — `create_rag_chain()` builds a LangChain runnable that: retrieves top-k docs → formats them into a single context string → passes into the Chat Prompt Template → calls the LLM → returns parsed string.
+9. **Interactive loop** — in `main()` a simple REPL accepts questions and returns answers.
+
+## How to run (example)
 
 ```bash
-export PROJECT_ID="your-project-id-here"
+python main.py
+# When prompted, paste the path to your resume PDF, e.g. /path/to/resume.pdf
+# Then ask questions like "What are the key skills?"
 ```
 
-Or you can enter it when prompted by the script.
+Sample output sequence you can expect:
 
-### Step 3: Automatic Credential Loading
+1. Credentials loaded (source shown).
+2. `Loaded N pages from the resume`
+3. `Vector store created successfully!`
+4. Test similarity search results printed (top-3).
+5. Interactive question → answer loop.
 
-The script looks for credentials in this order:
+## Code highlights & important snippets
 
-1. Environment variables `WML_APIKEY` and `PROJECT_ID`
-2. JSON file at `/Users/sanikachavan/Downloads/apikey.json` (expects an `apikey` field and optionally `project_id`)
-3. Interactive prompts (only used if the first two options are missing)
-
-This lets you keep secrets out of the repository while still running the script without retyping them every time.
-
-## Usage
-
-### Basic Usage
-
-1. Place your resume PDF file in a location accessible to the script
-2. Run the script:
-
-```bash
-python resume_rag.py
-```
-
-3. Provide the path to your resume PDF file when prompted (credentials are loaded automatically unless missing)
-
-4. The system will:
-   - Load and process your resume
-   - Create a vector store
-   - Test the system with a sample query
-   - Start an interactive Q&A session
-
-### Example Questions
-
-Once the system is ready, you can ask questions like:
-
-- "What are the key skills mentioned in the resume?"
-- "What is the candidate's work experience?"
-- "What education does the candidate have?"
-- "What programming languages are mentioned?"
-- "What is the candidate's current position?"
-- "What certifications does the candidate have?"
-
-Type `quit` or `exit` to stop the session.
-
-## How It Works
-
-### Step-by-Step Process
-
-1. **PDF Loading**: Uses `PyPDFLoader` from LangChain to extract text from PDF pages
-
-2. **Text Cleaning**: Removes excessive whitespace and newlines from the extracted text
-
-3. **Document Storage**: Keeps every PDF page intact as a LangChain `Document` (and only splits a page if the embedding model's 512-token limit would be exceeded)
-
-4. **Embeddings**: Uses IBM's `slate-125m-english-rtrvr-v2` embedding model to create vector embeddings for each page
-
-5. **Vector Store**: Stores embeddings in a Chroma vector database for fast similarity search
-
-6. **Retrieval**: When you ask a question, the system:
-   - Converts your question to an embedding
-   - Finds the most similar resume pages in the vector store
-   - Retrieves the top 3 most relevant pages
-
-7. **Generation**: The LLM (IBM Granite) generates an answer based on:
-   - The retrieved page-level context
-   - Your question
-   - A carefully crafted prompt template
-
-## Code Structure
-
-```
-Resume_Extractor/
-├── resume_rag.py          # Main script with all functionality
-├── requirements.txt       # Python dependencies
-└── README.md             # This file
-```
-
-## Functions Explained
-
-### `load_resume_pdf(pdf_path)`
-- Loads PDF using PyPDFLoader
-- Cleans text by removing extra whitespace
-- Adds metadata (ID, source, page number)
-
-### `enforce_embedding_limit(documents, max_tokens, chars_per_token)`
-- Ensures each resume page stays within the embedding model's token limit
-- Automatically splits a page into sequential slices only when the model requires it
-
-### `create_vector_store(documents, embeddings, collection_name)`
-- Creates a Chroma vector store
-- Stores resume pages with their embeddings
-- Enables fast similarity search
-
-### `setup_embeddings(credentials, project_id)`
-- Initializes IBM Slate embedding model
-- Used to convert text to vector representations
-
-### `setup_llm(credentials, project_id, model_id)`
-- Sets up IBM Granite LLM
-- Configures model parameters (temperature, top_p, etc.)
-
-### `create_rag_chain(vectorstore, llm)`
-- Creates the complete RAG pipeline
-- Combines retrieval and generation
-- Returns a chain that can answer questions
-
-## Customization
-
-### Change Number of Retrieved Documents
-
-In `create_rag_chain`, modify the `search_kwargs`:
+**No-chunking vector store creation** (recommended change):
 
 ```python
-retriever = vectorstore.as_retriever(search_kwargs={"k": 5})  # Retrieve top 5 instead of 3
+# Use this to index full pages directly
+vectorstore = Chroma.from_documents(documents=documents, embedding=embeddings, collection_name=collection_name)
 ```
 
-### Modify LLM Parameters
+**RAG prompt template**
 
-In `setup_llm`, adjust the parameters dictionary:
+```text
+You are a helpful assistant that answers questions about a resume based on the provided context.
+
+Context from the resume:
+{context}
+
+Question: {question}
+
+Answer the question based only on the context provided. If the information is not in the context, say "I don't have that information in the resume." Be concise and accurate.
+
+Answer:
+```
+
+**Watsonx LLM parameters** — tuned for factual answers and low hallucination:
 
 ```python
 parameters = {
-    GenParams.TEMPERATURE: 0.5,  # Higher = more creative
-    GenParams.MAX_NEW_TOKENS: 1024,  # Longer responses
-    # ... other parameters
+    GenParams.DECODING_METHOD: 'greedy',
+    GenParams.TEMPERATURE: 0.2,
+    GenParams.TOP_P: 0.9,
+    GenParams.TOP_K: 50,
+    GenParams.MIN_NEW_TOKENS: 10,
+    GenParams.MAX_NEW_TOKENS: 512,
+    GenParams.REPETITION_PENALTY: 1.2,
+    GenParams.STOP_SEQUENCES: ['\n\n'],
 }
 ```
+## Testing & validation
 
-### Change the Prompt Template
+* Test with 1–10 page resumes first.
+* Use `test_vector_store()` to inspect retrieved pages and ensure relevance.
+* If a page is massive and triggers a context overflow on the LLM, either use a larger-context watsonx model or split that page manually (outside of the enforced "no chunking" rule).
 
-Modify the `template` variable in `create_rag_chain` to change how the LLM responds:
+## Security & governance
 
-```python
-template = """Your custom prompt here...
-{context}
-Question: {question}
-Answer:"""
-```
+* Keep API keys secret. Use environment variables or a secrets manager in production.
+* watsonx.ai provides enterprise governance and audit features — leverage these for production deployments.
 
-## Troubleshooting
+## Limitations & trade-offs
 
-### Issue: "File not found"
-- Make sure the PDF path is correct
-- Use absolute path if relative path doesn't work
-- Check file permissions
+* **No chunking** can cause context overflow if pages are extremely large.
+* Chroma is local — for high scale, consider a managed vector DB (Pinecone, Milvus, etc.).
+* Accuracy depends on the embedding model selection; test alternative watsonx retriever models for best retrieval quality.
 
-### Issue: "API key invalid"
-- Verify your API key is correct
-- Make sure the Runtime service is active
-- Check that the service is associated with your project
+## Next steps / enhancements
 
-### Issue: "Project ID not found"
-- Verify your project ID
-- Make sure the Runtime service is associated with the project
-
-### Issue: "No content extracted from PDF"
-- The PDF might be image-based (scanned)
-- Try using OCR tools first
-- Check if the PDF is password-protected
-
-### Issue: Poor retrieval results
-- Increase the number of retrieved documents (k parameter)
-- Check if the resume text was extracted correctly
-- Confirm the PDF text is being fully captured (no missing pages)
-
-## Next Steps
-
-- Add support for multiple resume formats (DOCX, TXT)
-- Implement persistent vector store (save to disk)
-- Add web interface for easier interaction
-- Support batch question processing
-- Add resume analysis features (skill extraction, experience summary, etc.)
-
-## Resources
-
-- [LangChain Documentation](https://python.langchain.com/)
-- [IBM watsonx.ai Documentation](https://www.ibm.com/products/watsonx-ai)
-- [Chroma Vector Database](https://www.trychroma.com/)
-
-## License
-
-This project is for educational purposes.
+* Add an admin UI to upload/manage PDFs and inspect vector store.
+* Add a pre-check for page token size and raise a warning or automated split (if allowed).
+* Add filtering by metadata (page, source) in retrieval.
+* Add automated tests, CI/CD packaging, and containerization.
 
