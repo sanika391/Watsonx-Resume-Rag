@@ -1,6 +1,6 @@
 # Resume RAG System — LangChain + IBM watsonx.ai
 
-> **One-line:** Extract text from a resume PDF, store full-page documents in a vector store (no chunking), then answer user questions by retrieving relevant pages and calling a watsonx LLM.
+> Extract text from a resume PDF, store full-page documents in a vector store (no chunking), then answer user questions by retrieving relevant pages and calling a watsonx LLM.
 
 ## Problem statement
 
